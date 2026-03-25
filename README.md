@@ -22,6 +22,23 @@ Tell Claude to just do the thing. Edit files, write code, run commands — get i
 /a Add input validation to the signup form
 ```
 
+### `/dr` — Dry Run
+
+Like `/a`, but shows you the implementation plan first — what files would change, what the approach is — then waits for your approval before doing anything.
+
+```
+/dr Refactor the API routes into separate modules
+```
+
+### `/scp` — Stage, Commit, Push
+
+Stage all changes, commit with a descriptive message, and push to the current branch. Optionally pass a commit message.
+
+```
+/scp
+/scp Fix login redirect bug
+```
+
 ### `/install-statusline` — Status Line
 
 Installs a custom status line that displays useful context at the bottom of your terminal:
