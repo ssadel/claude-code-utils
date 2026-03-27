@@ -24,10 +24,11 @@ Tell Claude to just do the thing. Edit files, write code, run commands — get i
 
 ### `/dr` — Dry Run
 
-Like `/a`, but shows you the implementation plan first — what files would change, what the approach is — then waits for your approval before doing anything.
+Preview exactly what would happen before it happens. For code changes, Claude makes the real edits in an isolated worktree and shows you the full diff. For external actions (tickets, comments, API calls), it shows the exact content that would be sent. Nothing is applied until you approve.
 
 ```
 /dr Refactor the API routes into separate modules
+/dr Create a Linear ticket for the auth bug
 ```
 
 ### `/scp` — Stage, Commit, Push
@@ -41,11 +42,11 @@ Stage all changes, commit with a descriptive message, and push to the current br
 
 ### `/install-statusline` — Status Line
 
-Installs a custom two-line status line that displays useful context at the bottom of your terminal:
+Installs a custom status line that displays useful context at the bottom of your terminal:
 
 ```
 📁 my-project | 🌿 main | 🤖 Opus 4.6 | 📊 ctx: 23%
-💲 session: $12.40 | 📨 ctx cost: ~$0.35/msg
+💲 session: $12.40
 ```
 
 ### Line 1: Session Info
@@ -61,10 +62,11 @@ Installs a custom two-line status line that displays useful context at the botto
 
 | Field | Description |
 |-------|-------------|
-| 💲 Session | Total cost of the current session, sourced directly from Claude Code |
-| 📨 Ctx cost | Approximate cost of the next message, based on the last message's actual cost |
+| 💲 Session | Total session cost. Uses Claude Code's `total_cost_usd` directly. |
 
-**How ctx cost works:** Each message sends the entire conversation history as input, so cost grows as context grows. Rather than using hardcoded token rates (which vary by model, fast mode, etc.), the script tracks the delta in Claude Code's own `total_cost_usd` between messages. The last message's cost is used as an approximation for the next. This is model-agnostic and accounts for fast mode, caching, and any other pricing factors automatically.
+**Resume-persistent:** When you resume a session, Claude Code resets `total_cost_usd` to 0. The status line detects this and recovers the pre-resume cost by parsing the full transcript JSONL, calculating from token counts and per-model rates. The recovered cost is cached and shown with a `~` prefix (e.g., `~$8.52`) to indicate it includes an estimated portion.
+
+**Unknown models:** If the current model isn't in the hardcoded rate table, the status line shows `⚠️ unknown model: <model_id>` on a third line so you know the rates need updating.
 
 Zero dependencies beyond [`jq`](https://jqlang.github.io/jq/download/) and standard macOS tools. Run the skill and choose project-level or user-level installation.
 

@@ -5,8 +5,10 @@ input=$(cat)
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd')
 model=$(echo "$input" | jq -r '.model.display_name' | sed 's/^Claude //')
 used=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
-session_cost=$(echo "$input" | jq -r '.cost.total_cost_usd // empty')
+session_cost=$(echo "$input" | jq -r '.cost.total_cost_usd // "0"')
 session_id=$(echo "$input" | jq -r '.session_id // empty')
+model_id=$(echo "$input" | jq -r '.model.id // empty')
+transcript_path=$(echo "$input" | jq -r '.transcript_path // empty')
 branch=$(git -C "$cwd" --no-optional-locks symbolic-ref --short HEAD 2>/dev/null)
 
 dir=$(basename "$cwd")
@@ -24,43 +26,88 @@ line1="📁 $dir"
 line1="$line1 | 🤖 $model"
 [ -n "$used" ] && line1="$line1 | 📊 ctx: $(printf '%.0f' "$used")%"
 
-# ── Line 2: Costs ──
+# ── Line 2: Session cost ──
 
-# Session cost (from Claude Code directly)
-cost_fmt="?"
-if [ -n "$session_cost" ]; then
-  cost_fmt=$(awk "BEGIN { printf \"%.2f\", $session_cost }")
-fi
+# Rates per million tokens, selected by model ID
+# Used only for transcript parsing on resume (when total_cost_usd resets to 0)
+unknown_model=""
+rate_input=0
+rate_cache_write=0
+rate_cache_read=0
+rate_output=0
 
-# Ctx cost (delta between current and previous session total)
-# Cache stores: line 1 = previous total, line 2 = last non-zero delta
-# Only updates when cost actually changes (new message), so re-renders during typing keep the last value
-ctx_cost=""
-if [ -n "$session_cost" ] && [ -n "$session_id" ]; then
-  cache_file="/tmp/cc-sl-prev-cost-$session_id"
-  prev_cost=""
-  last_delta=""
+case "$model_id" in
+  *opus-4-6*)
+    rate_input=5
+    rate_cache_write=6.25
+    rate_cache_read=0.50
+    rate_output=25
+    ;;
+  *sonnet-4-6*)
+    rate_input=3
+    rate_cache_write=3.75
+    rate_cache_read=0.30
+    rate_output=15
+    ;;
+  *haiku-4-5*)
+    rate_input=0.80
+    rate_cache_write=1
+    rate_cache_read=0.08
+    rate_output=4
+    ;;
+  *)
+    unknown_model="$model_id"
+    ;;
+esac
+
+# Check for cached base cost from a previous resume
+cost_prefix="$"
+base_cost=0
+if [ -n "$session_id" ]; then
+  cache_file="/tmp/cc-sl-base-cost-$session_id"
+
   if [ -f "$cache_file" ]; then
-    prev_cost=$(sed -n '1p' "$cache_file")
-    last_delta=$(sed -n '2p' "$cache_file")
+    base_cost=$(cat "$cache_file")
+    cost_prefix="~$"
   fi
 
-  if [ -n "$prev_cost" ]; then
-    delta=$(awk "BEGIN { v = $session_cost - $prev_cost; if (v < 0) v = 0; printf \"%.2f\", v }")
-    if [ "$delta" != "0.00" ]; then
-      ctx_cost="$delta"
-      printf '%s\n%s\n' "$session_cost" "$delta" > "$cache_file" 2>/dev/null
+  # If total_cost_usd is 0 and no cached base, this might be a resume
+  # Parse the full transcript to recover pre-resume cost
+  is_zero=$(awk "BEGIN { print ($session_cost == 0) ? 1 : 0 }")
+  if [ "$is_zero" = "1" ] && [ ! -f "$cache_file" ] && [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
+    if [ -z "$unknown_model" ]; then
+      base_cost=$(jq -rs \
+        --argjson ri "$rate_input" \
+        --argjson rcw "$rate_cache_write" \
+        --argjson rcr "$rate_cache_read" \
+        --argjson ro "$rate_output" '
+        [.[] | select(.type == "assistant" and .message.usage != null) | .message.usage] |
+        reduce .[] as $u (0;
+          . + (($u.input_tokens // 0) * $ri)
+            + (($u.cache_creation_input_tokens // 0) * $rcw)
+            + (($u.cache_read_input_tokens // 0) * $rcr)
+            + (($u.output_tokens // 0) * $ro)
+        ) / 1000000
+      ' "$transcript_path" 2>/dev/null)
+
+      if [ -n "$base_cost" ] && [ "$base_cost" != "0" ] && [ "$base_cost" != "null" ]; then
+        printf '%s' "$base_cost" > "$cache_file" 2>/dev/null
+        cost_prefix="~$"
+      else
+        base_cost=0
+      fi
     else
-      ctx_cost="$last_delta"
+      cost_prefix="~$"
     fi
-  else
-    printf '%s\n\n' "$session_cost" > "$cache_file" 2>/dev/null
   fi
 fi
 
-line2="💲 session: \$$cost_fmt"
-if [ -n "$ctx_cost" ]; then
-  line2="$line2 | 📨 ctx cost: ~\$$ctx_cost/msg"
-fi
+total_cost=$(awk "BEGIN { printf \"%.2f\", ${base_cost:-0} + ${session_cost:-0} }")
 
-printf "%s\n%s" "$line1" "$line2"
+line2="💲 session: ${cost_prefix}${total_cost}"
+
+if [ -n "$unknown_model" ]; then
+  printf "%s\n%s\n⚠️ unknown model: %s" "$line1" "$line2" "$unknown_model"
+else
+  printf "%s\n%s" "$line1" "$line2"
+fi
